@@ -163,18 +163,6 @@ bool Load(const std::string& steamclientPath)
         kIPCChannel,
         "steamclient",
         steamclientPath,
-    }, [](const std::string& body) {
-        try {
-            const toml::table root = toml::parse(body);
-            for (const auto& [key, val] : root) {
-                if (!val.is_table()) continue;
-                Interface iface;
-                if (ParseInterfaceTable(key.str(), *val.as_table(), iface) &&
-                    !iface.methods.empty()) return true;
-            }
-        } catch (const toml::parse_error&) {
-        }
-        return false;
     });
 
     if (!r.ok) {
@@ -196,24 +184,12 @@ bool Load(const std::string& steamclientPath)
         Interface iface;
         if (!ParseInterfaceTable(key.str(), *val.as_table(), iface)) continue;
 
-        if (iface.methods.empty()) {
-            LOG_WARN("IPCLoader: [{}] has no usable methods; ignoring interface", iface.name);
-            continue;
-        }
         g_registry.Add(std::move(iface));
-    }
-
-    // An empty or incompatible TOML must never activate IPC interception.
-    if (g_registry.MethodCount() == 0) {
-        LOG_WARN("IPCLoader: no usable IPC methods in metadata; disabling IPC interception");
-        g_registry.Clear();
-        ShowMissingPopup(r.sha256);
-        return false;
     }
 
     LOG_INFO("IPCLoader: loaded {} methods across {} interfaces ({})",
              MethodCount(), InterfaceCount(),
-             r.fromCache ? "local cache" : "remote");
+             r.fromCache ? "cache fallback" : "remote");
     return true;
 }
 
