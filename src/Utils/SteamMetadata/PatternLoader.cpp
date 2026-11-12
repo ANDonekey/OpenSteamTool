@@ -175,11 +175,18 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
 {
     namespace fs = std::filesystem;
 
+    // A reload replaces the prior state. An earlier failed load must not
+    // permanently block a recovered module or leave stale addresses alive.
+    g_moduleMaps.erase(module);
+    g_failedModules.erase(module);
+
     // Delegate fetch + cache + mirror fallback to RemoteToml.
     RemoteToml::Result r = RemoteToml::Fetch({
         kPatternChannel,
         component,
         dllPath,
+    }, [&](const std::string& body) {
+        return !ParsePatternString(body).empty();
     });
 
     if (r.ok) {
@@ -187,7 +194,7 @@ bool Load(OSTPlatform::DynamicLibrary::ModuleHandle module, const std::string& d
         PatternMap map = ParsePatternString(r.body, &parseErr);
         if (!map.empty()) {
             LOG_INFO("PatternLoader: loaded {} patterns for {} ({})",
-                     map.size(), component, r.fromCache ? "cache fallback" : "remote");
+                     map.size(), component, r.fromCache ? "local cache" : "remote");
             g_moduleMaps[module] = std::move(map);
             return true;
         }
@@ -234,12 +241,17 @@ void* FindPattern(OSTPlatform::DynamicLibrary::ModuleHandle module, const char* 
 
     const PatternEntry& entry = entryIt->second;
 
-    // Priority 1: RVA direct offset
+    // Priority 1: RVA direct offset, only within the loaded module image.
+    // A malformed or outdated metadata RVA must not produce an invalid hook pointer.
     if (entry.rva != 0) {
-        void* addr = reinterpret_cast<void*>(
-            reinterpret_cast<uintptr_t>(module) + entry.rva);
-        LOG_DEBUG("PatternLoader: {} resolved via RVA 0x{:X}", funcName, entry.rva);
-        return addr;
+        const auto image = OSTPlatform::Memory::GetModuleImage(module);
+        if (image && entry.rva < image->size) {
+            void* addr = image->base + entry.rva;
+            LOG_DEBUG("PatternLoader: {} resolved via RVA 0x{:X}", funcName, entry.rva);
+            return addr;
+        }
+        LOG_WARN("PatternLoader: RVA 0x{:X} for '{}' is outside module image",
+                 entry.rva, funcName);
     }
 
     // Priority 2: byte-signature scan
